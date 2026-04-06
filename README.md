@@ -1,6 +1,6 @@
 # Beyond static snapshots: capturing aging momentum for enhanced lifespan prediction in mice
 
-This repository contains the source code to evaluate and compare the predictive performance of the proposed two-time-point dataset ($F_2^{\mathrm{cdrts}}$) against the single-time-point dataset ($F_1$), as described in the accompanying paper.
+This repository contains the source code to evaluate and compare the predictive performance of the proposed two-time-point dataset, $F_2^{\mathrm{cdrts}}$ against the single-time-point dataset, $F_1$, as described in the accompanying paper.
 
 ## 1. Environment
 The following environment has been tested and verified for operation:
