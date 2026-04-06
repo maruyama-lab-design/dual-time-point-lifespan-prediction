@@ -13,7 +13,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from xgboost import XGBRegressor
-from catboost import CatBoostRegressor
 from sklearn.linear_model import Ridge, Lasso
 from sklearn.svm import SVR
 import matplotlib.pyplot as plt
@@ -21,14 +20,24 @@ import seaborn as sns
 import json
 from itertools import product
 
-'''
-Functions utilized in the death prediction model
-
-Note that this isn't optimized for CUDA
-'''
-
-#additional program with # after context
+#original NN model
 """class Model(nn.Module):
+  def __init__(self, n_inputs=None, h1=70, h2=70, out_features=1):
+    super().__init__()
+    self.fc1 = nn.Linear(n_inputs, h1)
+    self.fc2 = nn.Linear(h1, h2)
+    self.out = nn.Linear(h2, out_features)
+
+
+  def forward(self, x):
+    x = F.relu(self.fc1(x))
+    x = F.relu(self.fc2(x))
+    x = self.out(x)
+
+    return x"""
+
+#modified NN model with dropout and GELU activation
+class Model(nn.Module):
   def __init__(self, n_inputs=None, h1=70, h2=70, out_features=1,dropout_rate=0.2): #add dropout_rate
     super().__init__()
     self.fc1 = nn.Linear(n_inputs, h1)
@@ -48,60 +57,8 @@ Note that this isn't optimized for CUDA
     x = self.dropout(x) #add
     x = self.out(x)
 
-    return x"""
-
-class Model(nn.Module):
-  def __init__(self, n_inputs=None, h1=70, h2=70, out_features=1):
-    super().__init__()
-    self.fc1 = nn.Linear(n_inputs, h1)
-    self.fc2 = nn.Linear(h1, h2)
-    self.out = nn.Linear(h2, out_features)
-
-
-  def forward(self, x):
-    x = F.relu(self.fc1(x))
-    x = F.relu(self.fc2(x))
-    x = self.out(x)
-
     return x
 
-
-def set_seed(seed):
-    '''
-    Sets a specific random seed to make results consistent
-    '''
-
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-        
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-    return
-
-
-def time_to_death_grouped(data, category):
-    '''
-    Groups predicted time until death value by selected category
-      param data: inputted dataframe, includes predicted time until death and category columns, df
-      param category: the category, i.e. column name, to group dataframe by, str
-      return: dataframe grouped by category, df
-    '''
-    
-    print(f'Average time to death estimate by {category}:\n')
-
-    # group by category and calculate the mean predicted time until death
-    grouped_data = data.groupby(category, as_index=False)['Predicted time until death'].mean(numeric_only=True)
-
-    # sort the grouped data in descending order
-    grouped_data = grouped_data.sort_values(by='Predicted time until death', ascending=False)
-    
-    # print and return the result
-    print(grouped_data)
-    print('\n')
-    
-    return grouped_data
 
 def plot_loss(train_losses, val_losses, fold_number=None):
     epochs = range(len(val_losses))
@@ -149,31 +106,23 @@ def get_sample_weights(y, bins,normalize = False):
         weights_array = weights_array /np.sum(weights_array)
     return weights_array
 
+def calculate_sample_weights(df, id_col='ID', tj_col='tj'):
+    #counts = df.groupby([id_col, tj_col])[tj_col].transform('count') # Consider individuals (SLMAE)
+    counts = df.groupby(tj_col)[tj_col].transform('count') # Doesn't consider individuals (MAE)
+    sample_weights = 1.0/counts
+    return sample_weights.values
+
+
 def cross_validation(X, y, loss_bins, eva_bins, groups,batch_size, n_iterations, loss_mode,test_error_mode,patience, pred_mode, ablation_drop_col = None, scramble_trait=False, remove_trait=False):
 
   #debug
   #print(f"Initial X columns in cross_validation: {X.columns.tolist()}")
   #print(f"Initial X shape in cross_validation: {X.shape}")
-
-  '''
-    runs cross validation to determine loss of neural network model
-    param X: all input values, df
-    param y: all expected output values, df
-    param batch_size: size of each batch to be run by each iteration of the NN, int
-    param n_iterations: number of entries within cross validation, int
-    param scramble_trait: whether to test the accuracy of the model with scrambled inputs by parameter during testing
-    param remove_trait: whether to test the accuracy of the model with removed parameters during training
-    return: 3 lists containing all of the models predictions, the actual values, and the loss values
-  '''
-  #all_approx = []
-  #all_actual = []
+  
   all_predictions_df_list = []
   all_losses = []
   all_fold_rmse = []
   all_fold_mae = []
-  #all_fold_weighted_rmse = []
-  #all_fold_weighted_mae = []
-  #all_fold_SLMAE = []
   all_subject_SLMAE = []
   all_fold_SLMAE_std = []
   all_fold_SLRMSE = []
@@ -193,16 +142,11 @@ def cross_validation(X, y, loss_bins, eva_bins, groups,batch_size, n_iterations,
   plt.ylabel('Density')
   plt.show()"""
 
-  varience_anls=y_anls.groupby('strain_label')['death_clock_j'].std()
+  #varience_anls=y_anls.groupby('strain_label')['death_clock_j'].std()
   #print('each strain remaining lifespan standard deviation', varience_anls)
   #print(y_anls.groupby('strain_label')['death_clock_j'].describe())
   unique_subjects = X[['ID', 'strain_label']].drop_duplicates()
 
-  # get the data structures to return
-  if (scramble_trait or remove_trait):
-    trait_loss = {}
-
-  #gkf = GroupKFold(n_splits=n_iterations)
   sgkf = StratifiedGroupKFold(n_splits=n_iterations, shuffle=True, random_state=42)
   groups = X['ID']
 
@@ -243,6 +187,9 @@ def cross_validation(X, y, loss_bins, eva_bins, groups,batch_size, n_iterations,
         train_weights = calculate_sample_weights(X_train, id_col='ID', tj_col = 'time_point_in_study_weeks')
         tp = 'time_point_in_study_weeks'
 
+
+      #single time-point (dataset F_1) tp=0 remove
+      #*Comment out the following lines to keep tp=0 data in F_1
       if 'time_point_in_study_weeks' in X_test.columns:
         non_zero_train = X_train['time_point_in_study_weeks'] != 0
         non_zero_val = X_val['time_point_in_study_weeks'] != 0
@@ -253,6 +200,7 @@ def cross_validation(X, y, loss_bins, eva_bins, groups,batch_size, n_iterations,
         y_val = y_val[non_zero_val].copy()
         X_test = X_test[non_zero_test].copy()
         y_test = y_test[non_zero_test].copy()
+    #*
 
       #print(X_test['strain_label'].value_counts())
       #print(X_test[['ID', 'strain_label']].drop_duplicates()['strain_label'].value_counts())
@@ -265,10 +213,8 @@ def cross_validation(X, y, loss_bins, eva_bins, groups,batch_size, n_iterations,
 
           #plot_tj_error_analysis(predictions_df_fold)
       elif pred_mode == 'GB':
-          #model = train_cat(X_train,y_train,X_val,y_val,loss_mode, patience)
           model,train_losses,val_losses = train_xgb(X_train,y_train,X_val,y_val,loss_bins,loss_mode, patience)
-          plot_loss(train_losses,val_losses, loss_mode, fold_number=fold + 1)
-          #average_rmse,average_mae,average_wrmse, average_wmae, approx, actual = test_gb(model,test_error_mode, X_test, y_test,loss_bins,eva_bins)
+          #plot_loss(train_losses,val_losses, loss_mode, fold_number=fold + 1)
           average_rmse,average_mae,subject_level_MAE,subject_level_MAE_std, subject_level_RMSE,predictions_df_fold,strain_mae_fold = test_gb_linear(model, pred_mode,X_test, y_test,eva_bins,loss_bins, test_error_mode)
       elif pred_mode == 'Ridge' or pred_mode == 'Lasso':
           model, drop_col, val_losses = train_linear(X_train,y_train,X_val,y_val,pred_mode,alpha=1.0)
@@ -277,27 +223,18 @@ def cross_validation(X, y, loss_bins, eva_bins, groups,batch_size, n_iterations,
           model, train_losses, test_losses = train_SVR(X_train, y_train, X_val,y_val, C=100.0, gamma='scale', kernel='rbf')
           average_rmse,average_mae,subject_level_MAE,subject_level_MAE_std, subject_level_RMSE,predictions_df_fold,strain_mae_fold = test_gb_linear(model, pred_mode,X_test, y_test,eva_bins,loss_bins, test_error_mode)
 
-
-      #all_losses.extend(losses)
       all_fold_rmse.append(average_rmse)
       all_fold_mae.append(average_mae)
-      #all_fold_SLMAE.append(subject_level_MAE)
       all_subject_SLMAE.extend(subject_level_MAE.tolist())
       all_fold_SLMAE_std.append(subject_level_MAE_std)
       all_fold_SLRMSE.append(subject_level_RMSE)
       all_strain_results.append(strain_mae_fold)
-      #all_approx.extend(approx)
-      #all_actual.extend(actual)
       all_predictions_df_list.append(predictions_df_fold)
   
   test_predictions_df = pd.concat(all_predictions_df_list,ignore_index=True)
   #plot_tj_error_analysis(test_predictions_df,tp)
   #plot_two_time_point_heatmap(test_predictions_df)
-  """test_predictions_df = test_predictions_df.sort_values(
-          by=['ID','time_point_j'],
-          ascending=[True,True]).reset_index(drop=True)"""
   return test_predictions_df, all_fold_rmse, all_fold_mae, all_subject_SLMAE, all_fold_SLMAE_std, all_fold_SLRMSE, all_strain_results
-
 
 def linear_drop(X_train,t):
     X_train=pd.DataFrame(X_train)
@@ -310,13 +247,6 @@ def linear_drop(X_train,t):
             to_drop.append(lower.columns[i])
     print(to_drop)
     return to_drop
-
-
-def calculate_sample_weights(df, id_col='ID', tj_col='tj'):
-    #counts = df.groupby([id_col, tj_col])[tj_col].transform('count') # Consider individuals (SLMAE)
-    counts = df.groupby(tj_col)[tj_col].transform('count') # Doesn't consider individuals (MAE)
-    sample_weights = 1.0/counts
-    return sample_weights.values
 
 def plot_tj_error_analysis(predictions_df, tp):
     predictions_df['abs_error'] = (predictions_df['actual'] - predictions_df['approximation']).abs()
@@ -401,44 +331,6 @@ def plot_two_time_point_heatmap(df):
     plt.tight_layout()
     plt.show()
 
-def train_gb(X_train,y_train,X_val,y_val,loss_mode, patience,n_estimators=500):
-    X_train = X_train.values
-    y_train = y_train.values.ravel()
-    X_val = X_val.values
-    y_val = y_val.values.ravel()
-
-    #model initialization
-    if loss_mode == 'RMSE':
-        loss_function = 'squared_error'
-    elif loss_mode == 'MAE':
-        loss_function = 'absolute_error'
-    else:
-        raise ValueError("Invalid loss_mode. Use 'RMSE' or 'MAE'.")
-
-    model = GradientBoostingRegressor(
-            n_estimators=n_estimators,
-            learning_rate=0.01,
-            max_depth=3,
-            subsample=0.8,
-            loss=loss_function,
-            n_iter_no_change=patience,
-            validation_fraction=0.1,
-            random_state=42
-            )
-    print("Training Gradient Boosting Regressor...")
-    model.fit(X_train,y_train)
-    print("Training finished.")
-
-    val_preds = model.predict(X_val)
-    if loss_mode == 'RMSE':
-        val_loss = np.sqrt(mean_squared_error(y_val,val_preds))
-        print(f"Validation RMSE:{val_loss:.4f}")
-    elif loss_mode == 'MAE':
-        val_loss = mean_absolute_error(y_val, val_preds)
-        print(f"Validation MAE:{val_loss:.4f}")
-
-    return model
-
 def train_linear(X_train,y_train,X_val,y_val,model_type,alpha=1.0):
     X_train_fit = X_train.drop(columns=['ID', 'strain_label'])
     X_val_fit = X_val.drop(columns=['ID', 'strain_label'])
@@ -461,7 +353,6 @@ def train_linear(X_train,y_train,X_val,y_val,model_type,alpha=1.0):
 
     scaler_y = StandardScaler()
     y_train_fit = scaler_y.fit_transform(y_train.values.reshape(-1,1)).ravel()
-    #y_train_fit = y_train.values.ravel()
 
     is_two_point = 'time_point_j' in X_val.columns
 
@@ -553,10 +444,10 @@ def train_xgb(X_train,y_train,X_val,y_val,loss_bins,loss_mode, patience,n_estima
 
         model = XGBRegressor(
             n_estimators=n_estimators,
-            #learning_rate=0.01,#0.01
-            #max_depth=4, #3
-            #subsample=0.8,#0.8
-            colsample_bytree=0.8,#0.8
+            #learning_rate=0.01,
+            #max_depth=4,
+            #subsample=0.8,
+            colsample_bytree=0.8,
             objective = objective,
             eval_metric=eval_metric,
             early_stopping_rounds = 30,
@@ -598,6 +489,7 @@ def train_xgb(X_train,y_train,X_val,y_val,loss_bins,loss_mode, patience,n_estima
             best_val_losses = evals_result['validation_0'][eval_metric]
             print('best mae:',best_mae)
     return best_model,[],best_val_losses
+
 
 def train_SVR(X_train, y_train, X_val, y_val, C=1, gamma='scale', kernel='rbf'):
     X_train_fit = X_train.drop(columns=['ID', 'strain_label'])
@@ -654,7 +546,6 @@ def train_SVR(X_train, y_train, X_val, y_val, C=1, gamma='scale', kernel='rbf'):
         if current_mae < best_mae:
             best_mae=current_mae
             best_model = model
-
             best_model.scaler_X = scaler_X
             best_model.scaler_y = scaler_y
             best_model.cols_scale = cols_scale
@@ -662,45 +553,6 @@ def train_SVR(X_train, y_train, X_val, y_val, C=1, gamma='scale', kernel='rbf'):
             print('best C update',C,best_mae)
     return best_model,[],[]
 
-def train_cat(X_train,y_train,X_val,y_val,loss_mode, patience, n_estimators=1000):
-    X_train = X_train.values
-    y_train = y_train.values.ravel()
-    X_val = X_val.values
-    y_val = y_val.values.ravel()
-
-    #model initialization
-    if loss_mode == 'RMSE':
-        loss_function = 'RMSE'
-    elif loss_mode == 'MAE':
-        loss_function = 'MAE'
-    else:
-        raise ValueError("Invalid loss_mode. Use 'RMSE' or 'MAE'.")
-
-    model = CatBoostRegressor(
-            iterations=n_estimators,
-            learning_rate=0.03,
-            depth=6,
-            subsample=1,
-            colsample_bylevel=1,
-            loss_function=loss_function,
-            early_stopping_rounds=patience,
-            random_state=0,
-            verbose=0,
-            eval_metric=loss_function)
-
-    print("Training CatBoost Regressor...")
-    model.fit(X_train,y_train,eval_set=(X_val,y_val))
-    print("Training finished.")
-
-    val_preds = model.predict(X_val)
-    if loss_mode == 'RMSE':
-        val_loss = np.sqrt(mean_squared_error(y_val,val_preds))
-        print(f"Validation RMSE:{val_loss:.4f}")
-    elif loss_mode == 'MAE':
-        val_loss = mean_absolute_error(y_val, val_preds)
-        print(f"Validation MAE:{val_loss:.4f}")
-
-    return model
 
 def train_nn(X_train, y_train, X_val, y_val, sample_weights, loss_bins, batch_size, loss_mode, patience, ablation_drop_col=None, epochs=500):
   X_train_fit = X_train.drop(columns=['ID', 'strain_label'])
@@ -940,7 +792,7 @@ def test_nn_new(loss_mode, model, X_test, y_test, eva_bins, ablation_drop_col=No
         #print(val_predictions_df)
     return average_rmse,average_mae, subject_level_MAEs, subject_level_MAE_std, subject_level_RMSE,val_predictions_df,strain_maes
 
-#def test_gb(model,test_error_mode,X_test,y_test,loss_bins,eva_bins):
+
 def test_gb_linear(model, reg_arch, X_test, y_test, drop_col, eva_bins, loss_mode=None,test_error_mode=None):
     is_two_timepoint =  'time_point_j' in X_test.columns
 
@@ -1009,8 +861,6 @@ def test_gb_linear(model, reg_arch, X_test, y_test, drop_col, eva_bins, loss_mod
         subject_level_MAEs = tp_grouped.groupby('ID')['Abs_Err_tp'].mean()
         subject_level_MSEs = tp_grouped.groupby('ID')['Sq_Err_tp'].mean()
     else:
-        #evaluation_df['Abs_Err'] = np.abs(evaluation_df['approximation'] - evaluation_df['actual'])
-        #evaluation_df['Sq_Err'] = (evaluation_df['approximation'] - evaluation_df['actual'])**2
         subject_level_MAEs = evaluation_df.groupby('ID')['Abs_Err'].mean()
         subject_level_MSEs = evaluation_df.groupby('ID')['Sq_Err'].mean()
 
@@ -1038,7 +888,6 @@ def test_gb_linear(model, reg_arch, X_test, y_test, drop_col, eva_bins, loss_mod
     column_order.extend(['actual','approximation'])
     val_predictions_df = pd.DataFrame(prediction_data,columns=column_order)
 
-    #return rmse_average_loss,mae_average_loss, weighted_rmse_loss,  weighted_mae_loss,approx,actual
     return average_rmse, average_mae, subject_level_MAEs, subject_level_MAE_std, subject_level_RMSE, val_predictions_df, strain_maes
 
 def get_loso_data(X, y, test_strain, min_id_count):
@@ -1087,7 +936,8 @@ def loso(X, y, batch_size, epochs=1000):
         print(f"\n Testing on strain: {test_strain}")
 
         X_train_raw, y_train_raw, X_test, y_test = get_loso_data(X, y, test_strain, min_id_count)
-        #学習データの個体数確認
+
+        #chck the number of training subjects for each strain
         print(X_train_raw['strain_label'].value_counts())
         print("The number of traning subjects each strain", X_train_raw[['ID', 'strain_label']].drop_duplicates()['strain_label'].value_counts())
 
@@ -1156,7 +1006,7 @@ def loso(X, y, batch_size, epochs=1000):
         y_val_fit = scaler_y.transform(y_val.values.reshape(-1,1)).ravel()
         y_test_raw = y_test.values.ravel()
 
-        #Tensor化
+        #to Tensor
         X_train_tensor = torch.FloatTensor(X_train_fit)
         X_val_tensor = torch.FloatTensor(X_val_fit)
         X_test_tensor = torch.FloatTensor(X_test_raw)
@@ -1298,23 +1148,3 @@ def loso(X, y, batch_size, epochs=1000):
 
             print(f"Result for {test_strain}: MAE = {average_mae:.4f}")
     return all_strain_mae, all_strain_rmse, all_subject_SLMAE, all_subject_SLRMSE, all_subject_SLMAE_std
-
-def generate_nn_pred(model, X):
-  '''
-  gets predictions for input values using trained NN
-
-    param model: trained NN, torch object
-    param X: input values, df
-
-    returns: n predictions, numpy array
-  '''
-  model.eval()
-
-  X = X.values
-  X = torch.tensor(X, dtype=torch.float32)
-
-  with torch.no_grad():
-     outputs = model(X)
-  outputs = outputs.detach().numpy() 
-
-  return outputs   
